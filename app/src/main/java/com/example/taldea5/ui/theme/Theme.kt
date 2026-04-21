@@ -1,33 +1,31 @@
 package com.example.taldea5.ui.theme
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-private val LightColorScheme = lightColorScheme(
-    primary = SushiRed,
-    secondary = SushiRedDark,
-    tertiary = SushiRedLight,
-    background = AppBackground,
-    surface = AppSurface,
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = SushiRedDark,
-    onBackground = AppText,
-    onSurface = AppText
+private val ColorScheme = darkColorScheme(
+    primary = BrandGold,
+    secondary = BrandIvory,
+    tertiary = BrandGold,
+    background = BrandBlack,
+    surface = BrandBlack,
+    onPrimary = BrandBlack,
+    onSecondary = BrandBlack,
+    onTertiary = BrandBlack,
+    onBackground = BrandIvory,
+    onSurface = BrandIvory
 )
 
 @Composable
 fun Taldea5Theme(
-    darkTheme: Boolean = false,
+    darkTheme: Boolean = true,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = LightColorScheme
-
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = ColorScheme,
         typography = Typography,
         content = content
     )

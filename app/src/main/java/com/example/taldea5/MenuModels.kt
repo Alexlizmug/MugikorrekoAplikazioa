@@ -12,5 +12,6 @@ data class MenuItem(
     val section: MenuSection,
     val shortInfo: String,
     val ingredientsText: String,
-    @DrawableRes val imageRes: Int
+    @DrawableRes val imageRes: Int,
+    val isPlatera: Boolean = false
 )

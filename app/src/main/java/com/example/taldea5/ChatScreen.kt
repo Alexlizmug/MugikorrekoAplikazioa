@@ -18,23 +18,30 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.taldea5.ui.theme.SushiRed
+import com.example.taldea5.ui.theme.BrandBlack
+import com.example.taldea5.ui.theme.BrandGold
+import com.example.taldea5.ui.theme.BrandIvory
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     host: String,
     port: Int = 5555,
-    userName: String?,
+    mesaId: Int?,
+    serviceNumber: Int,
+    chatSessionVersion: Int,
     onBack: () -> Unit
 ) {
-    val client = remember(host, port) { TcpChatClient(host, port) }
+    val mesaName = remember(mesaId) { mesaId?.let { "Mahaia $it" } ?: "Mahaia" }
+    val client = remember(host, port, mesaId, chatSessionVersion) {
+        TcpChatClient(host, port, mesaId, mesaName)
+    }
 
     val connected by client.connected.collectAsState()
     val messages by client.messages.collectAsState()
     val error by client.error.collectAsState()
 
-    var input by remember { mutableStateOf("") }
+    var input by remember(chatSessionVersion) { mutableStateOf("") }
 
     DisposableEffect(Unit) {
         client.connect()
@@ -49,24 +56,24 @@ fun ChatScreen(
         TopAppBar(
             title = {
                 Text(
-                    text = "Txata",
-                    color = SushiRed,
+                    text = if (mesaId != null) "Txata · $mesaName · Zerbitzua $serviceNumber" else "Txata",
+                    color = BrandGold,
                     fontWeight = FontWeight.Bold
                 )
             },
             navigationIcon = {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = null, tint = SushiRed)
+                    Icon(Icons.Default.ArrowBack, contentDescription = null, tint = BrandGold)
                 }
             },
             actions = {
                 Text(
                     text = if (connected) "Konektatuta" else "Konektatu gabe",
-                    color = if (connected) SushiRed else Color.Gray,
+                    color = if (connected) BrandGold else Color.Gray,
                     modifier = Modifier.padding(end = 12.dp)
                 )
             },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = BrandBlack)
         )
 
         error?.let {
@@ -107,13 +114,12 @@ fun ChatScreen(
 
             IconButton(
                 onClick = {
-                    val prefix = userName?.let { "$it: " } ?: ""
-                    client.send(prefix + input)
+                    client.send(input)
                     input = ""
                 },
                 enabled = connected && input.isNotBlank()
             ) {
-                Icon(Icons.Default.Send, contentDescription = null, tint = SushiRed)
+                Icon(Icons.Default.Send, contentDescription = null, tint = BrandGold)
             }
         }
     }
@@ -121,7 +127,7 @@ fun ChatScreen(
 
 @Composable
 private fun ChatBubble(fromMe: Boolean, text: String) {
-    val bg = if (fromMe) SushiRed.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.06f)
+    val bg = if (fromMe) BrandGold.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.06f)
     val align = if (fromMe) Alignment.End else Alignment.Start
 
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromMe) Arrangement.End else Arrangement.Start) {

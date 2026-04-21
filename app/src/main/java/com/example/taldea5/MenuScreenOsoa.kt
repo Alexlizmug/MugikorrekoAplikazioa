@@ -505,46 +505,53 @@ private fun mmss(ms: Long): String {
 @Composable
 fun MenuScreen(
     workerName: String?,
+    workerMahaiId: Int?,
+    chatBaimena: Boolean,
+    serviceNumber: Int,
+    serviceActive: Boolean,
+    onServiceStarted: () -> Unit,
+    onServiceFinished: () -> Unit,
     onLogout: () -> Unit,
     onOpenChat: () -> Unit,
     sharedCart: MutableMap<Int, Int>? = null,
     sharedAccumulated: MutableList<EskaeraLineRequest>? = null
 ) {
-    val mahaiId = 12
+    val mahaiId = workerMahaiId
 
-    val maxTotal = 20
-    val windowMs = 10L * 60L * 1000L
+    val maxTotal = 10
+    val cooldownMs = 20L * 60L * 1000L
     fun nowMs() = System.currentTimeMillis()
 
-    var windowStartAt by rememberSaveable { mutableStateOf(0L) }
-    var orderedInWindow by rememberSaveable { mutableStateOf(0) }
-
-    fun windowRemainingMs(): Long {
-        if (windowStartAt == 0L) return 0L
-        return (windowStartAt + windowMs - nowMs()).coerceAtLeast(0L)
-    }
-
-    fun isWindowActive(): Boolean = windowRemainingMs() > 0L
-
-    fun resetWindowIfExpired() {
-        if (windowStartAt != 0L && windowRemainingMs() == 0L) {
-            windowStartAt = 0L
-            orderedInWindow = 0
-        }
-    }
-
-    fun remainingQuota(): Int {
-        resetWindowIfExpired()
-        return (maxTotal - orderedInWindow).coerceAtLeast(0)
-    }
+    var cooldownEndAt by rememberSaveable { mutableStateOf(0L) }
+    var orderedInQuota by rememberSaveable { mutableStateOf(0) }
 
     var tick by remember { mutableStateOf(0) }
-    LaunchedEffect(windowStartAt) {
-        while (isWindowActive()) {
+    
+    LaunchedEffect(cooldownEndAt) {
+        while (cooldownEndAt > nowMs()) {
             delay(1000)
             tick++
         }
-        resetWindowIfExpired()
+        if (cooldownEndAt > 0L && cooldownEndAt <= nowMs()) {
+            cooldownEndAt = 0L
+            orderedInQuota = 0
+        }
+    }
+
+    fun remainingCooldownMs(): Long {
+        tick // forzar recomposición
+        return (cooldownEndAt - nowMs()).coerceAtLeast(0L)
+    }
+
+    fun isCooldownActive(): Boolean = remainingCooldownMs() > 0L
+
+    fun remainingQuota(): Int {
+        if (!isCooldownActive() && cooldownEndAt > 0L) {
+            cooldownEndAt = 0L
+            orderedInQuota = 0
+        }
+        if (isCooldownActive()) return 0
+        return (maxTotal - orderedInQuota).coerceAtLeast(0)
     }
 
     val scope = rememberCoroutineScope()
@@ -554,25 +561,26 @@ fun MenuScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf<List<MenuItem>>(emptyList()) }
 
-    // Hasierako saskiaren egoera (sharedCart bada, hori erabili, bestela hutsik)
     val cart = remember { mutableStateMapOf<Int, Int>().apply { sharedCart?.let { putAll(it) } } }
-    
-    // Hasierako eskaera metatuen egoera (sharedAccumulated bada, hori erabili)
     val accumulatedOrders = remember { mutableStateListOf<EskaeraLineRequest>().apply { sharedAccumulated?.let { addAll(it) } } }
 
-    // Aldaketak gertatzean, kanpoko egoera ere eguneratu (sinkronizazioa)
-    LaunchedEffect(cart.size, cart.values.sum()) {
+    LaunchedEffect(cart.toMap()) {
         sharedCart?.clear()
         sharedCart?.putAll(cart)
     }
     
-    LaunchedEffect(accumulatedOrders.size) {
+    LaunchedEffect(accumulatedOrders.toList()) {
         sharedAccumulated?.clear()
         sharedAccumulated?.addAll(accumulatedOrders)
     }
 
-    fun qtyOf(id: Int) = cart[id] ?: 0
-    fun totalQty() = cart.values.sum()
+    fun committedQtyOf(id: Int) = accumulatedOrders.count { it.produktuaId == id }
+    fun draftQtyOf(id: Int) = cart[id] ?: 0
+    fun qtyOf(id: Int) = draftQtyOf(id) + committedQtyOf(id)
+    fun draftQty() = cart.values.sum()
+    fun draftPlaterakQty() = cart.entries.sumOf { (id, qty) ->
+        if (menu.firstOrNull { it.id == id }?.isPlatera == true) qty else 0
+    }
 
     var section by remember { mutableStateOf(MenuSection.Platerak) }
     var ordersExpanded by remember { mutableStateOf(true) }
@@ -588,30 +596,32 @@ fun MenuScreen(
         loading = true
         error = null
         try {
-            val res = RetrofitClient.api.getProduktuak()
-            if (res.isSuccessful && res.body() != null) {
-                val dto = res.body()!!
+            val resProd = RetrofitClient.api.getProduktuak()
+            val resPlat = RetrofitClient.api.getPlaterak()
+            
+            if (resProd.isSuccessful && resProd.body() != null && resPlat.isSuccessful && resPlat.body() != null) {
+                val prodDto = resProd.body()!!
+                val platDto = resPlat.body()!!.datuak ?: emptyList()
 
-                fun sectionOf(typeId: Int): MenuSection? = when (typeId) {
+                fun sectionOfProd(typeId: Int): MenuSection? = when (typeId) {
                     6 -> MenuSection.Edariak
                     14 -> MenuSection.Postreak
-                    8, 9, 10, 11, 12, 13 -> MenuSection.Platerak
                     else -> null
                 }
 
-                menu = dto.mapNotNull { p ->
-                    val sec = sectionOf(p.produktuenMotakId) ?: return@mapNotNull null
-                    val name = p.izena ?: "Izenik gabe"
+                val menuList = mutableListOf<MenuItem>()
 
+                // 1. Cargamos las bebidas y postres desde Produktuak
+                prodDto.forEach { p ->
+                    val sec = sectionOfProd(p.produktuenMotakId) ?: return@forEach
+                    val name = p.izena ?: "Izenik gabe"
                     val normName = normalizeName(name)
                     var li = infoMap[normName]
-
+                    
                     if (li == null) {
                         val normTokens = normName.split(" ").filter { it.length > 2 }.toSet()
-                        
                         var bestKey: String? = null
                         var bestScore = 0
-
                         for (key in infoMap.keys) {
                             val keyTokens = key.split(" ").filter { it.length > 2 }.toSet()
                             val score = keyTokens.intersect(normTokens).size
@@ -620,28 +630,62 @@ fun MenuScreen(
                                 bestKey = key
                             }
                         }
-
-                        if (bestKey != null && bestScore > 0) {
-                            li = infoMap[bestKey]
-                        }
+                        if (bestKey != null && bestScore > 0) li = infoMap[bestKey]
                     }
 
-                    val shortInfo = li?.short ?: ""
-                    val ingredientsText = li?.ingredients ?: ""
-
-                    MenuItem(
+                    menuList.add(MenuItem(
                         id = p.id,
                         name = name,
                         price = (p.prezioa?.toDouble() ?: -1.0),
                         stock = (p.stock ?: 0),
                         section = sec,
-                        shortInfo = shortInfo,
-                        ingredientsText = ingredientsText,
-                        imageRes = li?.imageRes ?: R.drawable.shusinelli
-                    )
-                }.sortedBy { it.name }
+                        shortInfo = li?.short ?: "",
+                        ingredientsText = li?.ingredients ?: "",
+                        imageRes = li?.imageRes ?: R.drawable.shusinelli,
+                        isPlatera = false
+                    ))
+                }
+
+                // 2. Cargamos los platos desde Platerak
+                platDto.forEach { p ->
+                    val sec = MenuSection.Platerak
+                    val name = p.izena ?: "Izenik gabe"
+                    val normName = normalizeName(name)
+                    var li = infoMap[normName]
+                    
+                    if (li == null) {
+                        val normTokens = normName.split(" ").filter { it.length > 2 }.toSet()
+                        var bestKey: String? = null
+                        var bestScore = 0
+                        for (key in infoMap.keys) {
+                            val keyTokens = key.split(" ").filter { it.length > 2 }.toSet()
+                            val score = keyTokens.intersect(normTokens).size
+                            if (score > bestScore) {
+                                bestScore = score
+                                bestKey = key
+                            }
+                        }
+                        if (bestKey != null && bestScore > 0) li = infoMap[bestKey]
+                    }
+
+                    val ingredientsStr = p.osagaiak?.mapNotNull { it.izena }?.joinToString(", ") ?: li?.ingredients ?: ""
+
+                    menuList.add(MenuItem(
+                        id = p.id,
+                        name = name,
+                        price = (p.prezioa?.toDouble() ?: -1.0),
+                        stock = 99, // Platerak no tienen stock directo en esta vista
+                        section = sec,
+                        shortInfo = li?.short ?: p.mota ?: "",
+                        ingredientsText = ingredientsStr,
+                        imageRes = li?.imageRes ?: R.drawable.shusinelli,
+                        isPlatera = true
+                    ))
+                }
+
+                menu = menuList.sortedBy { it.name }
             } else {
-                error = "Errorea produktuak: ${res.code()}"
+                error = "Errorea datuak kargatzean"
             }
         } catch (e: Exception) {
             error = "Errorea: ${e.message}"
@@ -651,29 +695,33 @@ fun MenuScreen(
     }
 
     fun inc(item: MenuItem) {
-        resetWindowIfExpired()
-
-        if (totalQty() >= maxTotal) return
-
-        if (isWindowActive() && totalQty() >= remainingQuota()) return
+        if (item.isPlatera) {
+            if (isCooldownActive()) return
+            if (draftPlaterakQty() >= remainingQuota()) return
+        }
 
         val current = qtyOf(item.id)
         if (current >= item.stock) return
-        cart[item.id] = current + 1
+        cart[item.id] = draftQtyOf(item.id) + 1
     }
 
     fun dec(item: MenuItem) {
-        val q = qtyOf(item.id)
-        if (q <= 1) cart.remove(item.id) else cart[item.id] = q - 1
+        val draftQty = draftQtyOf(item.id)
+        if (draftQty > 0) {
+            if (draftQty == 1) cart.remove(item.id) else cart[item.id] = draftQty - 1
+        }
     }
 
     fun canOrder(): Boolean {
-        resetWindowIfExpired()
         if (ordering) return false
         if (cart.isEmpty()) return false
 
-        val cartQty = totalQty()
-        return if (isWindowActive()) cartQty <= remainingQuota() else true
+        if (isCooldownActive()) {
+            if (draftPlaterakQty() > 0) return false
+        } else {
+            if (draftPlaterakQty() > remainingQuota()) return false
+        }
+        return true
     }
 
     fun canPay(): Boolean {
@@ -684,10 +732,15 @@ fun MenuScreen(
 
     suspend fun doOrder() {
         if (!canOrder()) return
+        if (mahaiId == null) {
+            orderMsg = "Langile honek ez dauka mahaia esleituta"
+            return
+        }
+
         ordering = true
         orderMsg = null
 
-        val orderedNowQty = totalQty()
+        val orderedPlaterakNowQty = draftPlaterakQty()
 
         try {
             val lines = cart.entries.flatMap { (id, qty) ->
@@ -698,29 +751,48 @@ fun MenuScreen(
                         izena = item?.name,
                         prezioa = item?.price?.let { if (it < 0) null else it },
                         data = nowIso(),
-                        egoera = 0
+                        egoera = 0,
+                        isPlatera = item?.isPlatera == true
                     )
                 }
             }
 
-            // Lokalki gorde (ez bidali zerbitzarira oraindik)
+            val currentPrice = lines.sumOf { it.prezioa ?: 0.0 }
+            val req = ZerbitzuaCreateRequest(
+                prezioTotala = currentPrice,
+                data = nowIso(),
+                erreserbaId = null,
+                mahaiakId = mahaiId,
+                eskaerak = lines
+            )
+
+            val res = RetrofitClient.api.createZerbitzua(body = req)
+            if (!res.isSuccessful) {
+                orderMsg = "Errorea eskaera bidaltzean: ${res.code()}"
+                ordering = false
+                return
+            }
+
             val requestedMap = cart.toMap()
             menu = menu.map { m ->
                 val take = requestedMap[m.id] ?: 0
                 if (take <= 0) m else m.copy(stock = (m.stock - take).coerceAtLeast(0))
             }
 
-            resetWindowIfExpired()
-            if (!isWindowActive()) {
-                windowStartAt = nowMs()
-                orderedInWindow = 0
+            orderedInQuota += orderedPlaterakNowQty
+            if (orderedInQuota >= maxTotal && cooldownEndAt == 0L) {
+                orderedInQuota = maxTotal
+                cooldownEndAt = nowMs() + cooldownMs
             }
-            orderedInWindow += orderedNowQty
-            if (orderedInWindow > maxTotal) orderedInWindow = maxTotal
 
             accumulatedOrders.addAll(lines)
             cart.clear()
-            orderMsg = "Eskaera gordeta (Eskatuta) ✅"
+            if (!serviceActive) {
+                onServiceStarted()
+                orderMsg = "Zerbitzua $serviceNumber hasi da. Eskaera sukaldera bidali da ✅"
+            } else {
+                orderMsg = "Eskaera sukaldera bidali da ✅"
+            }
 
         } catch (e: Exception) {
             orderMsg = "Errorea: ${e.message}"
@@ -734,10 +806,18 @@ fun MenuScreen(
         
         if (cart.isNotEmpty() && !canOrder()) return
 
+        if (mahaiId == null) {
+            orderMsg = "Langile honek ez dauka mahaia esleituta"
+            return
+        }
+
         ordering = true
         orderMsg = null
 
         try {
+            var zerbitzuaId: Int? = null
+
+            // Si hay algo en el carrito sin enviar, lo enviamos primero
             val currentLines = cart.entries.flatMap { (id, qty) ->
                 val item = menu.firstOrNull { it.id == id }
                 List(qty) { _ ->
@@ -746,33 +826,48 @@ fun MenuScreen(
                         izena = item?.name,
                         prezioa = item?.price?.let { if (it < 0) null else it },
                         data = nowIso(),
-                        egoera = 0
+                        egoera = 0,
+                        isPlatera = item?.isPlatera == true
                     )
                 }
             }
 
-            val allLines = accumulatedOrders + currentLines
-            
-            val totalPrice = allLines.sumOf { it.prezioa ?: 0.0 }
+            if (currentLines.isNotEmpty()) {
+                val currentPrice = currentLines.sumOf { it.prezioa ?: 0.0 }
+                val req = ZerbitzuaCreateRequest(
+                    prezioTotala = currentPrice,
+                    data = nowIso(),
+                    erreserbaId = null,
+                    mahaiakId = mahaiId,
+                    eskaerak = currentLines
+                )
+                val res = RetrofitClient.api.createZerbitzua(body = req)
+                if (res.isSuccessful) {
+                    zerbitzuaId = res.body()?.id
+                } else {
+                    orderMsg = "Errorea ordainketa (eskaerak bidaltzean): ${res.code()}"
+                    ordering = false
+                    return
+                }
+            } else {
+                // Si el carrito estaba vacío, necesitamos obtener el zerbitzuaId de alguna manera.
+                // Como createZerbitzua devuelve el ID del servicio activo si le enviamos 0 eskaerak...
+                val req = ZerbitzuaCreateRequest(
+                    prezioTotala = 0.0,
+                    data = nowIso(),
+                    erreserbaId = null,
+                    mahaiakId = mahaiId,
+                    eskaerak = emptyList()
+                )
+                val res = RetrofitClient.api.createZerbitzua(body = req)
+                if (res.isSuccessful) {
+                    zerbitzuaId = res.body()?.id
+                }
+            }
 
-            val req = ZerbitzuaCreateRequest(
-                prezioTotala = totalPrice,
-                data = nowIso(),
-                erreserbaId = null,
-                mahaiakId = mahaiId,
-                eskaerak = allLines
-            )
-
-            val res = RetrofitClient.api.createZerbitzua(body = req)
-
-            if (res.isSuccessful) {
+            if (zerbitzuaId != null) {
                 try {
-                    val fakturaReq = FakturaCreateRequest(
-                        prezioTotala = totalPrice,
-                        data = nowIso(),
-                        mahaiakId = mahaiId
-                    )
-                    val resFaktura = RetrofitClient.api.createFaktura(body = fakturaReq)
+                    val resFaktura = RetrofitClient.api.createFaktura(zerbitzuaId)
                     if (!resFaktura.isSuccessful) {
                         println("Errorea faktura sortzean: ${resFaktura.code()}")
                     }
@@ -780,21 +875,14 @@ fun MenuScreen(
                     println("Errorea faktura deian: ${e.message}")
                 }
 
-                if (cart.isNotEmpty()) {
-                    val requestedMap = cart.toMap()
-                    menu = menu.map { m ->
-                        val take = requestedMap[m.id] ?: 0
-                        if (take <= 0) m else m.copy(stock = (m.stock - take).coerceAtLeast(0))
-                    }
-                }
-
                 cart.clear()
                 accumulatedOrders.clear()
-                orderMsg = "Ordainketa eginda (Zerbitzua) ✅"
-                
-                onLogout()
+                orderedInQuota = 0
+                cooldownEndAt = 0L
+                onServiceFinished()
+                orderMsg = "Ordainketa eginda. Zerbitzua itxita eta hurrengoa prest ✅"
             } else {
-                orderMsg = "Errorea ordainketa: ${res.code()}"
+                orderMsg = "Errorea ordainketa: zerbitzuaren IDa ez da aurkitu"
             }
 
         } catch (e: Exception) {
@@ -826,10 +914,22 @@ fun MenuScreen(
                 .width(240.dp)
                 .fillMaxHeight()
                 .background(Color.White)
-                .border(1.dp, SushiRed.copy(alpha = 0.25f))
+                .border(1.dp, BrandGold.copy(alpha = 0.25f))
                 .padding(12.dp)
         ) {
-            Text("Ongi etorri", fontWeight = FontWeight.SemiBold, color = SushiRed)
+            Text("Ongi etorri", fontWeight = FontWeight.SemiBold, color = BrandGold)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Mahaia ${mahaiId ?: "-"}",
+                fontWeight = FontWeight.Bold,
+                color = Color.Black
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (serviceActive) "Zerbitzua $serviceNumber aktibo" else "Zerbitzua $serviceNumber prest",
+                color = if (serviceActive) SuccessGreen else BrandGold,
+                fontWeight = FontWeight.SemiBold
+            )
             Spacer(Modifier.height(12.dp))
 
             SidebarItemRow("Platerak", section == MenuSection.Platerak) { section = MenuSection.Platerak }
@@ -851,15 +951,51 @@ fun MenuScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color.White)
-                    .border(1.dp, SushiRed.copy(alpha = 0.25f))
+                    .border(1.dp, BrandGold.copy(alpha = 0.25f))
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Menua", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = SushiRed)
+                Text("Menua", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = BrandGold)
                 Spacer(Modifier.weight(1f))
 
-                TextButton(onClick = onOpenChat) {
-                    Text("Txata", color = SushiRed, fontWeight = FontWeight.Bold)
+                Text(
+                    if (serviceActive) "Zerbitzua $serviceNumber aktibo" else "Zerbitzua $serviceNumber prest",
+                    color = if (serviceActive) SuccessGreen else BrandGold,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(Modifier.width(12.dp))
+
+                TextButton(onClick = {
+                    scope.launch {
+                        if (workerMahaiId != null) {
+                            try {
+                                val res = RetrofitClient.api.checkChatBaimena(workerMahaiId)
+                                if (res.isSuccessful) {
+                                    val baimena = res.body()?.chatBaimena ?: false
+                                    if (baimena) {
+                                        onOpenChat()
+                                    } else {
+                                        orderMsg = "Mahai honek ez dauka txata erabiltzeko baimenik."
+                                    }
+                                } else {
+                                    if (!chatBaimena) {
+                                        orderMsg = "Mahai honek ez dauka txata erabiltzeko baimenik."
+                                    } else {
+                                        onOpenChat()
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                if (!chatBaimena) {
+                                    orderMsg = "Mahai honek ez dauka txata erabiltzeko baimenik."
+                                } else {
+                                    onOpenChat()
+                                }
+                            }
+                        }
+                    }
+                }) {
+                    Text("Txata", color = BrandGold, fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(Modifier.width(8.dp))
@@ -868,20 +1004,19 @@ fun MenuScreen(
                     Icon(
                         imageVector = if (ordersExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = null,
-                        tint = SushiRed
+                        tint = BrandGold
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text(if (ordersExpanded) "Eskaerak ezkutatu" else "Eskaerak erakutsi", color = SushiRed)
+                    Text(if (ordersExpanded) "Eskaerak ezkutatu" else "Eskaerak erakutsi", color = BrandGold)
                 }
             }
 
             if (ordersExpanded) {
                 OrdersBar(menu = menu, cart = cart, accumulated = accumulatedOrders, modifier = Modifier.fillMaxWidth())
 
-                resetWindowIfExpired()
                 val quota = remainingQuota()
-                val active = isWindowActive()
-                val remMs = windowRemainingMs()
+                val active = isCooldownActive()
+                val remMs = remainingCooldownMs()
 
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -890,7 +1025,7 @@ fun MenuScreen(
                     Button(
                         onClick = { scope.launch { doOrder() } },
                         enabled = canOrder(),
-                        colors = ButtonDefaults.buttonColors(containerColor = SushiRed, contentColor = Color.White)
+                        colors = ButtonDefaults.buttonColors(containerColor = BrandGold, contentColor = Color.White)
                     ) {
                         if (ordering) {
                             CircularProgressIndicator(
@@ -916,8 +1051,8 @@ fun MenuScreen(
                     Spacer(Modifier.width(12.dp))
 
                     Text(
-                        "Total: ${totalQty()}/$maxTotal",
-                        color = SushiRed,
+                        "Platerak: ${draftPlaterakQty()}/$quota",
+                        color = BrandGold,
                         fontWeight = FontWeight.SemiBold
                     )
 
@@ -925,16 +1060,16 @@ fun MenuScreen(
 
                     if (active) {
                         Text(
-                            "Leihoa: ${mmss(remMs)} · Geratzen da: $quota",
-                            color = SushiRed,
+                            "Itxaron: ${mmss(remMs)}",
+                            color = DangerRed,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
 
-                if (active && totalQty() > quota) {
+                if (active && draftPlaterakQty() > 0) {
                     Text(
-                        "Ezin da: 10 minutuan max $maxTotal produktu. Geratzen da $quota.",
+                        "Ezin da eskatu platerik. Itxaron ${mmss(remMs)} minutu.",
                         color = DangerRed,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -950,11 +1085,11 @@ fun MenuScreen(
                 }
             }
 
-            HorizontalDivider(color = SushiRed.copy(alpha = 0.25f))
+            HorizontalDivider(color = BrandGold.copy(alpha = 0.25f))
 
             when {
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = SushiRed)
+                    CircularProgressIndicator(color = BrandGold)
                 }
                 error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(error!!, color = DangerRed)
@@ -972,7 +1107,7 @@ fun MenuScreen(
                                             groupTitle,
                                             fontSize = 16.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = SushiRed
+                                            color = BrandGold
                                         )
                                         Spacer(Modifier.height(6.dp))
                                     }
@@ -981,7 +1116,8 @@ fun MenuScreen(
                                         MenuCard(
                                             item = item,
                                             qty = qtyOf(item.id),
-                                            canAddMore = totalQty() < maxTotal && (!isWindowActive() || totalQty() < remainingQuota()),
+                                            canRemove = draftQtyOf(item.id) > 0,
+                                            canAddMore = if (item.isPlatera) (!isCooldownActive() && draftPlaterakQty() < remainingQuota()) else true,
                                             onPlus = { inc(item) },
                                             onMinus = { dec(item) },
                                             onImageClick = {
@@ -1003,7 +1139,8 @@ fun MenuScreen(
                                     MenuCard(
                                         item = item,
                                         qty = qtyOf(item.id),
-                                        canAddMore = totalQty() < maxTotal && (!isWindowActive() || totalQty() < remainingQuota()),
+                                        canRemove = draftQtyOf(item.id) > 0,
+                                        canAddMore = if (item.isPlatera) (!isCooldownActive() && draftPlaterakQty() < remainingQuota()) else true,
                                         onPlus = { inc(item) },
                                         onMinus = { dec(item) },
                                         onImageClick = {
@@ -1021,10 +1158,55 @@ fun MenuScreen(
     }
 
     if (showPaymentDialog) {
+        val currentLines = cart.entries.flatMap { (id, qty) ->
+            val item = menu.firstOrNull { it.id == id }
+            List(qty) { _ ->
+                EskaeraLineRequest(
+                    produktuaId = id,
+                    izena = item?.name,
+                    prezioa = item?.price?.let { if (it < 0) null else it },
+                    data = nowIso(),
+                    egoera = 0,
+                    isPlatera = item?.isPlatera == true
+                )
+            }
+        }
+        val allLines = accumulatedOrders + currentLines
+        val totalPrice = allLines.sumOf { it.prezioa ?: 0.0 }
+        
+        val groupedItems = allLines.groupBy { it.izena ?: "Ezezaguna" }
+            .map { (name, list) -> 
+                val qty = list.size
+                val itemPrice = list.firstOrNull()?.prezioa ?: 0.0
+                Triple(name, qty, qty * itemPrice)
+            }.sortedBy { it.first }
+
         AlertDialog(
             onDismissRequest = { showPaymentDialog = false },
-            title = { Text("Ordaindu", fontWeight = FontWeight.Bold, color = SushiRed) },
-            text = { Text("Ordaindu nahi duzu?") },
+            title = { Text("Ordaindu", fontWeight = FontWeight.Bold, color = BrandGold) },
+            text = {
+                Column {
+                    Text("Hau da zure eskaera:", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                        items(groupedItems) { (name, qty, price) ->
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("$name x$qty", modifier = Modifier.weight(1f), fontSize = 14.sp)
+                                Text("€%.2f".format(price), fontSize = 14.sp)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Guztira:", fontWeight = FontWeight.Bold)
+                        Text("€%.2f".format(totalPrice), fontWeight = FontWeight.Bold, color = BrandGold)
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text("Ziur ordaindu nahi duzula?")
+                }
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -1052,22 +1234,22 @@ fun MenuScreen(
         ) {
             val item = selectedItem!!
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                Text(item.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = SushiRed)
+                Text(item.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = BrandGold)
                 Spacer(Modifier.height(10.dp))
 
-                Text("Informazioa:", fontWeight = FontWeight.SemiBold, color = SushiRed)
+                Text("Informazioa:", fontWeight = FontWeight.SemiBold, color = BrandGold)
                 Spacer(Modifier.height(6.dp))
                 Text(item.shortInfo)
 
                 Spacer(Modifier.height(14.dp))
-                Text("Osagaiak:", fontWeight = FontWeight.SemiBold, color = SushiRed)
+                Text("Osagaiak:", fontWeight = FontWeight.SemiBold, color = BrandGold)
                 Spacer(Modifier.height(6.dp))
                 Text(item.ingredientsText)
 
                 Spacer(Modifier.height(18.dp))
                 Button(
                     onClick = { scope.launch { sheetState.hide() }.invokeOnCompletion { selectedItem = null } },
-                    colors = ButtonDefaults.buttonColors(containerColor = SushiRed, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(containerColor = BrandGold, contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("Itxi") }
             }
@@ -1081,11 +1263,11 @@ private fun SidebarItemRow(title: String, selected: Boolean, onClick: () -> Unit
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) SushiRed.copy(alpha = 0.08f) else Color.Transparent)
+            .background(if (selected) BrandGold.copy(alpha = 0.08f) else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 10.dp)
     ) {
-        Text(title, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = SushiRed)
+        Text(title, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = BrandGold)
     }
 }
 
@@ -1093,13 +1275,13 @@ private fun SidebarItemRow(title: String, selected: Boolean, onClick: () -> Unit
 private fun MenuCard(
     item: MenuItem,
     qty: Int,
+    canRemove: Boolean,
     canAddMore: Boolean,
     onPlus: () -> Unit,
     onMinus: () -> Unit,
     onImageClick: () -> Unit
 ) {
-    val lowStock = item.stock <= 5
-    val noMoreBecauseStock = qty >= (item.stock - 5)
+    val noMoreBecauseStock = item.stock <= 0 || qty >= item.stock
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1116,7 +1298,7 @@ private fun MenuCard(
                     modifier = Modifier
                         .size(84.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .border(1.dp, SushiRed.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                        .border(1.dp, BrandGold.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
                         .clickable { onImageClick() }
                 )
                 Icon(
@@ -1126,7 +1308,7 @@ private fun MenuCard(
                     modifier = Modifier
                         .padding(4.dp)
                         .size(22.dp)
-                        .background(SushiRed.copy(alpha = 0.85f), CircleShape)
+                        .background(BrandGold.copy(alpha = 0.85f), CircleShape)
                         .padding(4.dp)
                 )
             }
@@ -1134,7 +1316,7 @@ private fun MenuCard(
             Spacer(Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Text(item.name, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = SushiRed)
+                Text(item.name, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = BrandGold)
                 
                 Text(
                     text = item.shortInfo,
@@ -1161,14 +1343,7 @@ private fun MenuCard(
 
                 Spacer(Modifier.height(4.dp))
 
-                if (lowStock) {
-                    Text(
-                        "Stock baxua (<=5). Ezin da gehitu.",
-                        color = DangerRed,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                } else if (noMoreBecauseStock) {
+                if (noMoreBecauseStock) {
                     Text(
                         "Ez dago stock gehiago produktu honetarako.",
                         color = DangerRed,
@@ -1181,11 +1356,11 @@ private fun MenuCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
                     onClick = onMinus,
-                    enabled = qty > 0,
+                    enabled = canRemove,
                     modifier = Modifier
                         .size(40.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(DangerRed.copy(alpha = if (qty > 0) 0.12f else 0.05f))
+                        .background(DangerRed.copy(alpha = if (canRemove) 0.12f else 0.05f))
                 ) {
                     Icon(Icons.Default.Remove, null, tint = DangerRed)
                 }
@@ -1195,7 +1370,7 @@ private fun MenuCard(
 
                 Spacer(Modifier.width(8.dp))
 
-                val plusEnabled = canAddMore && !lowStock && !noMoreBecauseStock
+                val plusEnabled = canAddMore && !noMoreBecauseStock
 
                 IconButton(
                     onClick = onPlus,
@@ -1230,17 +1405,30 @@ private fun OrdersBar(menu: List<MenuItem>, cart: Map<Int, Int>, accumulated: Li
 
     val prevOrdered = remember(accumulated) {
         accumulated.groupBy { it.izena ?: "?" }
-            .map { (name, list) -> name to list.size }
+            .map { (name, list) -> Triple(name, list.size, list.sumOf { it.prezioa ?: 0.0 }) }
             .sortedBy { it.first }
     }
+
+    val cartTotal = ordered.sumOf { (item, qty) -> (item.price.coerceAtLeast(0.0)) * qty }
+    val accumulatedTotal = prevOrdered.sumOf { it.third }
+    val totalGuztira = cartTotal + accumulatedTotal
 
     Column(
         modifier = modifier
             .background(Color.White)
-            .border(1.dp, SushiRed.copy(alpha = 0.25f))
+            .border(1.dp, BrandGold.copy(alpha = 0.25f))
             .padding(12.dp)
     ) {
-        Text("Eskatutako produktuak", fontWeight = FontWeight.Bold, color = SushiRed)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Eskatutako produktuak", fontWeight = FontWeight.Bold, color = BrandGold)
+            if (ordered.isNotEmpty() || prevOrdered.isNotEmpty()) {
+                Text("Guztira: €%.2f".format(totalGuztira), fontWeight = FontWeight.Bold, color = BrandGold)
+            }
+        }
         Spacer(Modifier.height(8.dp))
 
         if (ordered.isEmpty() && prevOrdered.isEmpty()) {
@@ -1248,7 +1436,7 @@ private fun OrdersBar(menu: List<MenuItem>, cart: Map<Int, Int>, accumulated: Li
         } else {
             if (prevOrdered.isNotEmpty()) {
                 Text("Bidalita (Zerbitzarian gordetzeko zain):", fontSize = 12.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
-                prevOrdered.forEach { (name, qty) ->
+                prevOrdered.forEach { (name, qty, _) ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -1259,13 +1447,13 @@ private fun OrdersBar(menu: List<MenuItem>, cart: Map<Int, Int>, accumulated: Li
                     Spacer(Modifier.height(4.dp))
                 }
                 if (ordered.isNotEmpty()) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = SushiRed.copy(alpha = 0.1f))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = BrandGold.copy(alpha = 0.1f))
                 }
             }
 
             if (ordered.isNotEmpty()) {
                 if (prevOrdered.isNotEmpty()) {
-                     Text("Saskia (Berriak):", fontSize = 12.sp, color = SushiRed, fontWeight = FontWeight.Bold)
+                     Text("Saskia (Berriak):", fontSize = 12.sp, color = BrandGold, fontWeight = FontWeight.Bold)
                 }
                 ordered.forEach { (item, qty) ->
                     Row(
@@ -1273,7 +1461,7 @@ private fun OrdersBar(menu: List<MenuItem>, cart: Map<Int, Int>, accumulated: Li
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("• ${item.name}", modifier = Modifier.weight(1f))
-                        Text("x$qty", fontWeight = FontWeight.SemiBold, color = SushiRed)
+                        Text("x$qty", fontWeight = FontWeight.SemiBold, color = BrandGold)
                     }
                     Spacer(Modifier.height(4.dp))
                 }

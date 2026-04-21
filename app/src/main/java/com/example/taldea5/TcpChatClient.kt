@@ -1,5 +1,6 @@
 package com.example.taldea5
 
+import android.util.Base64
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +18,9 @@ data class ChatMessage(
 
 class TcpChatClient(
     private val host: String,
-    private val port: Int
+    private val port: Int,
+    private val mesaId: Int?,
+    private val mesaName: String
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -37,6 +40,10 @@ class TcpChatClient(
 
     fun connect() {
         if (_connected.value) return
+        if (mesaId == null) {
+            _error.value = "Mahaia identifikatu gabe dago."
+            return
+        }
 
         _error.value = null
         scope.launch {
@@ -45,6 +52,7 @@ class TcpChatClient(
                 socket = s
                 reader = BufferedReader(InputStreamReader(s.getInputStream()))
                 writer = BufferedWriter(OutputStreamWriter(s.getOutputStream()))
+                sendRaw(buildRegisterMessage(mesaId, mesaName))
                 _connected.value = true
 
                 readJob?.cancel()
@@ -52,7 +60,7 @@ class TcpChatClient(
                     try {
                         while (isActive && socket?.isConnected == true) {
                             val line = reader?.readLine() ?: break
-                            addMessage(fromMe = false, text = line)
+                            handleServerLine(line)
                         }
                     } catch (e: Exception) {
                         _error.value = "Chat irakurtze errorea: ${e.message}"
@@ -85,22 +93,66 @@ class TcpChatClient(
     fun send(text: String) {
         val msg = text.trim()
         if (msg.isEmpty()) return
+        val currentMesaId = mesaId ?: run {
+            _error.value = "Mahaia identifikatu gabe dago."
+            return
+        }
 
         addMessage(fromMe = true, text = msg)
 
         scope.launch {
             try {
-                writer?.apply {
-                    write(msg)
-                    newLine()
-                    flush()
-                } ?: run {
+                if (writer == null) {
                     _error.value = "Ez dago konexiorik."
+                    return@launch
                 }
+
+                sendRaw(buildMesaChatMessage(currentMesaId, mesaName, msg))
             } catch (e: Exception) {
                 _error.value = "Bidaltze errorea: ${e.message}"
             }
         }
+    }
+
+    private fun handleServerLine(line: String) {
+        val parts = line.split("|")
+        if (parts.size < 2) return
+
+        when (parts[0]) {
+            "CHAT" -> {
+                if (parts.size < 5) return
+                if (parts[1] != "TPV") return
+
+                val messageText = decode(parts[4])
+                addMessage(fromMe = false, text = messageText)
+            }
+        }
+    }
+
+    private fun buildRegisterMessage(mesaId: Int, mesaName: String): String {
+        return "REGISTER|MESA|$mesaId|${encode(mesaName)}"
+    }
+
+    private fun buildMesaChatMessage(mesaId: Int, mesaName: String, text: String): String {
+        return "CHAT|MESA|$mesaId|${encode(mesaName)}|${encode(text)}"
+    }
+
+    private fun sendRaw(text: String) {
+        writer?.apply {
+            write(text)
+            newLine()
+            flush()
+        } ?: run {
+            _error.value = "Ez dago konexiorik."
+        }
+    }
+
+    private fun encode(value: String): String {
+        return Base64.encodeToString(value.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    }
+
+    private fun decode(value: String): String {
+        return String(Base64.decode(value, Base64.NO_WRAP), Charsets.UTF_8)
     }
 
     private fun addMessage(fromMe: Boolean, text: String) {

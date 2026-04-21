@@ -16,8 +16,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.taldea5.ui.theme.SushiRed
 import com.example.taldea5.ui.theme.Taldea5Theme
+import com.example.taldea5.ui.theme.BrandBlack
+import com.example.taldea5.ui.theme.BrandGold
+import com.example.taldea5.ui.theme.BrandIvory
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -38,24 +40,45 @@ private enum class Screen { Login, Menu, Chat }
 @Composable
 private fun AppRoot() {
     var screen by remember { mutableStateOf(Screen.Login) }
-    var workerName by remember { mutableStateOf<String?>(null) }
-    
-    // Saskia eta metatutako eskaerak hemen gorde, pantaila aldatzean ez galtzeko
+    var loggedMahaia by remember { mutableStateOf<MahaiaLoginResponse?>(null) }
+    var serviceNumber by remember { mutableIntStateOf(1) }
+    var serviceActive by remember { mutableStateOf(false) }
+    var chatSessionVersion by remember { mutableIntStateOf(1) }
     val sharedCart = remember { mutableStateMapOf<Int, Int>() }
     val sharedAccumulated = remember { mutableStateListOf<EskaeraLineRequest>() }
 
     when (screen) {
         Screen.Login -> LoginScreen(
-            onLoginSuccess = { name ->
-                workerName = name
+            onLoginSuccess = { mahaia ->
+                loggedMahaia = mahaia
+                serviceNumber = 1
+                serviceActive = false
+                chatSessionVersion = 1
+                sharedCart.clear()
+                sharedAccumulated.clear()
                 screen = Screen.Menu
             }
         )
         Screen.Menu -> MenuScreen(
-            workerName = workerName,
+            workerName = loggedMahaia?.displayName,
+            workerMahaiId = loggedMahaia?.id,
+            chatBaimena = loggedMahaia?.chatBaimena ?: false,
+            serviceNumber = serviceNumber,
+            serviceActive = serviceActive,
+            onServiceStarted = {
+                serviceActive = true
+            },
+            onServiceFinished = {
+                serviceActive = false
+                serviceNumber += 1
+                chatSessionVersion += 1
+            },
             onLogout = {
-                workerName = null
-                sharedCart.clear() // Logout egitean saskia garbitu
+                loggedMahaia = null
+                serviceNumber = 1
+                serviceActive = false
+                chatSessionVersion = 1
+                sharedCart.clear()
                 sharedAccumulated.clear()
                 screen = Screen.Login
             },
@@ -66,8 +89,10 @@ private fun AppRoot() {
             sharedAccumulated = sharedAccumulated
         )
         Screen.Chat -> ChatScreen(
-            host = "192.168.1.11", // "192.168.1.104"
-            userName = workerName,
+            host = NetworkConfig.chatHost,
+            mesaId = loggedMahaia?.id,
+            serviceNumber = serviceNumber,
+            chatSessionVersion = chatSessionVersion,
             onBack = {
                 screen = Screen.Menu
             }
@@ -76,7 +101,7 @@ private fun AppRoot() {
 }
 
 @Composable
-private fun LoginScreen(onLoginSuccess: (String) -> Unit) {
+private fun LoginScreen(onLoginSuccess: (MahaiaLoginResponse) -> Unit) {
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
@@ -90,14 +115,14 @@ private fun LoginScreen(onLoginSuccess: (String) -> Unit) {
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .background(Color.White),
+                .background(BrandBlack),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Image(
-                painter = painterResource(id = R.drawable.shusinelli),
+                painter = painterResource(id = R.drawable.logo2erronkabien),
                 contentDescription = "Logoa",
-                modifier = Modifier.size(200.dp)
+                modifier = Modifier.size(240.dp)
             )
             Spacer(Modifier.height(16.dp))
         }
@@ -106,27 +131,27 @@ private fun LoginScreen(onLoginSuccess: (String) -> Unit) {
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .background(SushiRed)
+                .background(BrandBlack)
                 .padding(32.dp),
             verticalArrangement = Arrangement.Center
         ) {
 
-            Text("Erabiltzailea:", fontSize = 18.sp, color = Color.White)
+            Text("Erabiltzailea:", fontSize = 18.sp, color = BrandIvory)
             OutlinedTextField(
                 value = user,
                 onValueChange = { user = it },
                 modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color.White,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.7f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = Color.White
+                    focusedBorderColor = BrandGold,
+                    unfocusedBorderColor = BrandIvory.copy(alpha = 0.5f),
+                    focusedTextColor = BrandIvory,
+                    unfocusedTextColor = BrandIvory,
+                    cursorColor = BrandGold
                 )
             )
 
-            Text("Pasahitza:", fontSize = 18.sp, color = Color.White)
+            Text("Pasahitza:", fontSize = 18.sp, color = BrandIvory)
             OutlinedTextField(
                 value = pass,
                 onValueChange = { pass = it },
@@ -134,13 +159,15 @@ private fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color.White,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.7f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = Color.White
+                    focusedBorderColor = BrandGold,
+                    unfocusedBorderColor = BrandIvory.copy(alpha = 0.5f),
+                    focusedTextColor = BrandIvory,
+                    unfocusedTextColor = BrandIvory,
+                    cursorColor = BrandGold
                 )
             )
+
+            Spacer(Modifier.height(20.dp))
 
             Button(
                 onClick = {
@@ -149,8 +176,9 @@ private fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                         msg = ""
                         try {
                             val res = RetrofitClient.api.login(LoginRequest(user, pass))
-                            if (res.isSuccessful && res.body() != null) {
-                                onLoginSuccess(res.body()!!.izena)
+                            val mahaia = res.body()
+                            if (res.isSuccessful && mahaia != null) {
+                                onLoginSuccess(mahaia)
                             } else if (res.code() == 401) {
                                 msg = "Erabiltzailea edo pasahitza okerra da"
                             } else {
@@ -164,10 +192,10 @@ private fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                     }
                 },
                 enabled = !loading,
-                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = SushiRed)
+                colors = ButtonDefaults.buttonColors(containerColor = BrandGold, contentColor = BrandBlack)
             ) {
                 if (loading) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = SushiRed, strokeWidth = 2.dp)
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = BrandBlack, strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
                 }
                 Text("Saioa hasi")
@@ -175,7 +203,7 @@ private fun LoginScreen(onLoginSuccess: (String) -> Unit) {
 
             if (msg.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
-                Text(msg, color = Color.White)
+                Text(msg, color = BrandIvory)
             }
         }
     }

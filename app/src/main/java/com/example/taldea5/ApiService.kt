@@ -4,21 +4,28 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.Path
 
 data class LoginRequest(
     val erabiltzailea: String,
     val pasahitza: String
 )
 
-data class LangileaResponse(
+data class MahaiaLoginResponse(
     val id: Int,
-    val izena: String,
-    val abizena: String,
-    val email: String? = null,
-    val telefonoa: String? = null,
-    val baimena: Int? = null,
-    val erabiltzailea: String
+    val izena: String? = null,
+    val erabiltzailea: String? = null,
+    val chatBaimena: Boolean? = null
 )
+
+val MahaiaLoginResponse.displayName: String
+    get() {
+        return when {
+            !izena.isNullOrBlank() -> izena
+            !erabiltzailea.isNullOrBlank() -> erabiltzailea
+            else -> "Mahaia"
+        }
+    }
 
 data class ProduktuaDto(
     val id: Int,
@@ -30,11 +37,12 @@ data class ProduktuaDto(
 )
 
 data class EskaeraLineRequest(
-    val produktuaId: Int?,
+    val produktuaId: Int,
     val izena: String?,
     val prezioa: Double?,
-    val data: String?,
-    val egoera: Int?
+    val data: String,
+    val egoera: Int,
+    val isPlatera: Boolean = false
 )
 
 data class ZerbitzuaCreateRequest(
@@ -49,27 +57,49 @@ data class ZerbitzuaResponse(
     val id: Int
 )
 
-data class FakturaCreateRequest(
-    val prezioTotala: Double?,
-    val data: String?,
-    val mahaiakId: Int?
+data class PlateraOsagaiaDto(
+    val id: Int,
+    val izena: String?,
+    val stock: Int?
 )
 
-data class FakturaResponse(
-    val id: Int
+data class PlateraDto(
+    val id: Int,
+    val izena: String?,
+    val mota: String?,
+    val prezioa: Float?,
+    val argazkia: String?,
+    val argazkiaUrl: String?,
+    val osagaiak: List<PlateraOsagaiaDto>? = null
+)
+
+data class ErantzunaDto<T>(
+    val code: Int,
+    val message: String?,
+    val datuak: List<T>?
+)
+
+data class ChatBaimenaResponse(
+    val chatBaimena: Boolean
 )
 
 interface ApiService {
 
-    @POST("api/Langileak/login")
-    suspend fun login(@Body body: LoginRequest): Response<LangileaResponse>
+    @POST("api/mahaiak/login")
+    suspend fun login(@Body body: LoginRequest): Response<MahaiaLoginResponse>
 
-    @GET("api/Produktuak")
+    @GET("api/mahaiak/{id}/txat-baimena")
+    suspend fun checkChatBaimena(@Path("id") id: Int): Response<ChatBaimenaResponse>
+
+    @GET("api/produktuak")
     suspend fun getProduktuak(): Response<List<ProduktuaDto>>
 
-    @POST("api/Zerbitzua")
+    @GET("api/platerak")
+    suspend fun getPlaterak(): Response<ErantzunaDto<PlateraDto>>
+
+    @POST("api/zerbitzua")
     suspend fun createZerbitzua(@Body body: ZerbitzuaCreateRequest): Response<ZerbitzuaResponse>
 
-    @POST("api/Faktura")
-    suspend fun createFaktura(@Body body: FakturaCreateRequest): Response<FakturaResponse>
+    @POST("api/fakturak/{zerbitzuaId}/sortu")
+    suspend fun createFaktura(@Path("zerbitzuaId") zerbitzuaId: Int): Response<Unit>
 }
